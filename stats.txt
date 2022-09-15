@@ -1,0 +1,18 @@
+Statistics of data folder
+DATA FILE 77647
+INFO:root:Processing annotations
+Number of mf terms 6868
+Number of mf iprs 26406
+Number of mf proteins 43279
+43279 22445 43279
+Train/Valid/Test proteins for mf 34716/3851/4712
+Number of bp terms 21381
+Number of bp iprs 26406
+Number of bp proteins 58729
+58729 29311 58729
+Train/Valid/Test proteins for bp 47733/5552/5444
+Number of cc terms 2832
+Number of cc iprs 26406
+Number of cc proteins 59257
+59257 30006 59257
+Train/Valid/Test proteins for cc 48318/4970/5969
