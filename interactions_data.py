@@ -36,11 +36,9 @@ def main():
             if score < 700:
                 continue
             p1, p2 = mapping[p1], mapping[p2]
-            # p1, p2 = prot_idx[p1], prot_idx[p2]
             rel = it[2]
             if rel not in relations:
                 relations[rel] = len(relations)
-            # rel_id = relations[rel]
             is_dir = it[4] == 't'
             a_is_act = it[5] == 't'
             if p1 not in inters:
@@ -48,7 +46,7 @@ def main():
             inters[p1].add((rel, p2))
     interactions = []
     for i, row in enumerate(df.itertuples()):
-        p_id = prot_idx[row.proteins]
+        p_id = row.proteins
         if p_id in inters:
             interactions.append(inters[p_id])
         else:

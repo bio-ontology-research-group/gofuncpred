@@ -33,11 +33,9 @@ def main():
                     src.append(p_id)
                     dst.append(p2_id)
                     edge_types.append(rels[rel])
-
-        train_graph = dgl.graph((src, dst), num_nodes=len(proteins))
-        train_graph = dgl.add_self_loop(train_graph)
-        dgl.save_graphs(f'data/{ont}/ppi_train.bin', train_graph, {'etypes': th.LongTensor(edge_types)})
-
+        
+        print(len(src), len(proteins))
+        
         train_n = len(proteins)
         valid_df = pd.read_pickle(f'data/{ont}/valid_data.pkl')
         valid_proteins = valid_df['proteins']
@@ -45,6 +43,7 @@ def main():
             prot_idx[p_id] = train_n + i
 
         valid_proteins = set(valid_proteins)
+        valid_n = len(valid_proteins)
 
         for i, row in enumerate(train_df.itertuples()):
             p_id = prot_idx[row.proteins]
@@ -67,20 +66,16 @@ def main():
                     edge_types.append(rels[rel])
 
 
-        valid_graph = dgl.graph((src, dst), num_nodes=len(prot_idx))
-        valid_graph = dgl.add_self_loop(valid_graph)
-        dgl.save_graphs(f'data/{ont}/ppi_valid.bin', valid_graph, {'etypes': th.LongTensor(edge_types)})
-
         train_df = pd.concat([train_df, valid_df])
 
-        train_n = len(train_df)
         test_df = pd.read_pickle(f'data/{ont}/test_data.pkl')
         test_proteins = test_df['proteins']
         for i, p_id in enumerate(test_proteins):
-            prot_idx[p_id] = train_n + i
+            prot_idx[p_id] = train_n + valid_n + i
 
         test_proteins = set(test_proteins)
-
+        test_n = len(test_proteins)
+        
         for i, row in enumerate(train_df.itertuples()):
             p_id = prot_idx[row.proteins]
             for rel, p2_id in row.interactions:
@@ -102,9 +97,16 @@ def main():
                     edge_types.append(rels[rel])
 
 
-        test_graph = dgl.graph((src, dst), num_nodes=len(prot_idx))
-        test_graph = dgl.add_self_loop(test_graph)
-        dgl.save_graphs(f'data/{ont}/ppi_test.bin', test_graph, {'etypes': th.LongTensor(edge_types)})
+        graph = dgl.graph((src, dst), num_nodes=len(prot_idx))
+        graph.edata['etypes'] = th.LongTensor(edge_types)
+        graph = dgl.add_self_loop(graph)
+        dgl.save_graphs(
+            f'data/{ont}/ppi.bin', graph,
+            {
+                'train_nids': th.LongTensor(np.arange(train_n)),
+                'valid_nids': th.LongTensor(np.arange(train_n, train_n + valid_n)),
+                'test_nids': th.LongTensor(np.arange(train_n + valid_n, train_n + valid_n + test_n))
+            })
 
 if __name__ == '__main__':
     main()

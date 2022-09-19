@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, IterableDataset, TensorDataset
 from itertools import cycle
 import math
 from aminoacids import to_onehot, MAXLEN
-from dgl.nn import GraphConv
+from dgl.nn import RelGraphConv
 import dgl
 from torch_utils import FastTensorDataLoader
 import csv
@@ -35,7 +35,7 @@ from torch.optim.lr_scheduler import MultiStepLR
 @ck.option(
     '--load', '-ld', is_flag=True, help='Load Model?')
 @ck.option(
-    '--device', '-d', default='cuda:0',
+    '--device', '-d', default='cuda:1',
     help='Device')
 def main(data_root, ont, batch_size, epochs, load, device):
     go_file = f'{data_root}/go.obo'
@@ -45,25 +45,47 @@ def main(data_root, ont, batch_size, epochs, load, device):
 
     go = Ontology(go_file, with_rels=True)
     loss_func = nn.BCELoss()
-    iprs_dict, terms_dict, train_data, valid_data, test_data, test_df = load_data(data_root, ont)
+    iprs_dict, terms_dict, graph, train_nids, valid_nids, test_nids, data, labels, test_df = load_data(data_root, ont)
     n_terms = len(terms_dict)
     n_iprs = len(iprs_dict)
 
-    net = GOFuncModel(n_iprs, n_terms, device).to(device)
-    
-    train_features, train_labels = train_data
-    valid_features, valid_labels = valid_data
-    test_features, test_labels = test_data
-    
-    train_loader = FastTensorDataLoader(
-        *train_data, batch_size=batch_size, shuffle=True)
-    valid_loader = FastTensorDataLoader(
-        *valid_data, batch_size=batch_size, shuffle=False)
-    test_loader = FastTensorDataLoader(
-        *test_data, batch_size=batch_size, shuffle=False)
+    valid_labels = labels[valid_nids].numpy()
+    test_labels = labels[test_nids].numpy()
 
-    valid_labels = valid_labels.detach().cpu().numpy()
-    test_labels = test_labels.detach().cpu().numpy()
+    labels = labels.to(device)
+
+    print(valid_labels.shape)
+    
+    graph = graph.to(device)
+
+    train_nids = train_nids.to(device)
+    valid_nids = valid_nids.to(device)
+    test_nids = test_nids.to(device)
+    
+    net = GOFuncModel(n_iprs, n_terms, device).to(device)
+
+    sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
+    train_dataloader = dgl.dataloading.DataLoader(
+        graph, train_nids, sampler,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=0)
+
+    valid_dataloader = dgl.dataloading.DataLoader(
+        graph, valid_nids, sampler,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=0)
+
+    test_dataloader = dgl.dataloading.DataLoader(
+        graph, test_nids, sampler,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=0)
+    
     
     optimizer = th.optim.Adam(net.parameters(), lr=1e-3)
     scheduler = MultiStepLR(optimizer, milestones=[1, 3,], gamma=0.1)
@@ -76,13 +98,12 @@ def main(data_root, ont, batch_size, epochs, load, device):
         for epoch in range(epochs):
             net.train()
             train_loss = 0
-            train_steps = int(math.ceil(len(train_labels) / batch_size))
+            train_steps = int(math.ceil(len(train_nids) / batch_size))
             with ck.progressbar(length=train_steps, show_pos=True) as bar:
-                for batch_features, batch_labels in train_loader:
+                for input_nodes, output_nodes, blocks in train_dataloader:
                     bar.update(1)
-                    batch_features = batch_features.to(device)
-                    batch_labels = batch_labels.to(device)
-                    logits = net(batch_features)
+                    logits = net(input_nodes, output_nodes, blocks)
+                    batch_labels = labels[output_nodes]
                     loss = F.binary_cross_entropy(logits, batch_labels)
                     optimizer.zero_grad()
                     loss.backward()
@@ -94,19 +115,19 @@ def main(data_root, ont, batch_size, epochs, load, device):
             print('Validation')
             net.eval()
             with th.no_grad():
-                valid_steps = int(math.ceil(len(valid_labels) / batch_size))
+                valid_steps = int(math.ceil(len(valid_nids) / batch_size))
                 valid_loss = 0
                 preds = []
                 with ck.progressbar(length=valid_steps, show_pos=True) as bar:
-                    for batch_features, batch_labels in valid_loader:
+                    for input_nodes, output_nodes, blocks in valid_dataloader:
                         bar.update(1)
-                        batch_features = batch_features.to(device)
-                        batch_labels = batch_labels.to(device)
-                        logits = net(batch_features)
+                        logits = net(input_nodes, output_nodes, blocks)
+                        batch_labels = labels[output_nodes]
                         batch_loss = F.binary_cross_entropy(logits, batch_labels)
                         valid_loss += batch_loss.detach().item()
                         preds = np.append(preds, logits.detach().cpu().numpy())
                 valid_loss /= valid_steps
+                print(preds.shape)
                 roc_auc = compute_roc(valid_labels, preds)
                 print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, AUC - {roc_auc}')
                 logger.writerow([epoch, train_loss, valid_loss, roc_auc])
@@ -124,15 +145,14 @@ def main(data_root, ont, batch_size, epochs, load, device):
     net.load_state_dict(th.load(model_file))
     net.eval()
     with th.no_grad():
-        test_steps = int(math.ceil(len(test_labels) / batch_size))
+        test_steps = int(math.ceil(len(test_nids) / batch_size))
         test_loss = 0
         preds = []
         with ck.progressbar(length=test_steps, show_pos=True) as bar:
-            for batch_features, batch_labels in test_loader:
+            for input_nodes, output_nodes, blocks in test_dataloader:
                 bar.update(1)
-                batch_features = batch_features.to(device)
-                batch_labels = batch_labels.to(device)
-                logits = net(batch_features)
+                logits = net(input_nodes, output_nodes, blocks)
+                batch_labels = labels[output_nodes]
                 batch_loss = F.binary_cross_entropy(logits, batch_labels)
                 test_loss += batch_loss.detach().cpu().item()
                 preds = np.append(preds, logits.detach().cpu().numpy())
@@ -199,21 +219,24 @@ class MLPBlock(nn.Module):
 
 class GOFuncModel(nn.Module):
 
-    def __init__(self, nb_iprs, nb_gos, device, nodes=[1024,]):
+    def __init__(self, nb_iprs, nb_gos, device, hidden_dim=1024):
         super().__init__()
         self.nb_gos = nb_gos
-        input_length = nb_iprs
+        self.conv = RelGraphConv(nb_iprs, 1024, 7)
+        input_length = hidden_dim
         net = []
-        for hidden_dim in nodes:
-            net.append(MLPBlock(input_length, hidden_dim))
-            net.append(Residual(MLPBlock(hidden_dim, hidden_dim)))
-            input_length = hidden_dim
+        net.append(MLPBlock(input_length, hidden_dim))
+        net.append(Residual(MLPBlock(hidden_dim, hidden_dim)))
         net.append(nn.Linear(input_length, nb_gos))
         net.append(nn.Sigmoid())
         self.net = nn.Sequential(*net)
         
-    def forward(self, features):
-        return self.net(features)
+    def forward(self, input_nodes, output_nodes, blocks):
+        g = blocks[0]
+        features = g.ndata['feat']['_N']
+        etypes = g.edata['etypes']
+        x = self.conv(g, features, etypes)
+        return self.net(x)
 
     
 def load_data(data_root, ont):
@@ -230,11 +253,15 @@ def load_data(data_root, ont):
     valid_df = pd.read_pickle(f'{data_root}/{ont}/valid_data.pkl')
     test_df = pd.read_pickle(f'{data_root}/{ont}/test_data.pkl')
 
-    train_data = get_data(train_df, iprs_dict, terms_dict)
-    valid_data = get_data(valid_df, iprs_dict, terms_dict)
-    test_data = get_data(test_df, iprs_dict, terms_dict)
+    df = pd.concat([train_df, valid_df, test_df])
+    graphs, nids = dgl.load_graphs(f'{data_root}/{ont}/ppi.bin')
 
-    return iprs_dict, terms_dict, train_data, valid_data, test_data, test_df
+    data, labels = get_data(df, iprs_dict, terms_dict)
+    graph = graphs[0]
+    graph.ndata['feat'] = data
+    graph.ndata['labels'] = labels
+    train_nids, valid_nids, test_nids = nids['train_nids'], nids['valid_nids'], nids['test_nids']
+    return iprs_dict, terms_dict, graph, train_nids, valid_nids, test_nids, data, labels, test_df
 
 def get_data(df, iprs_dict, terms_dict):
     data = th.zeros((len(df), len(iprs_dict)), dtype=th.float32)
