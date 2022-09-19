@@ -102,6 +102,8 @@ class Ontology(object):
                     obj['is_a'] = list()
                     obj['part_of'] = list()
                     obj['regulates'] = list()
+                    obj['subclass_of'] = list()
+                    obj['relations'] = list()
                     obj['alt_ids'] = list()
                     obj['is_obsolete'] = False
                     continue
@@ -120,11 +122,14 @@ class Ontology(object):
                     elif l[0] == 'namespace':
                         obj['namespace'] = l[1]
                     elif l[0] == 'is_a':
-                        obj['is_a'].append(l[1].split(' ! ')[0])
+                        term_id = l[1].split(' ! ')[0]
+                        obj['is_a'].append(term_id)
+                        obj['subclass_of'].append(term_id)
                     elif with_rels and l[0] == 'relationship':
                         it = l[1].split()
                         # add all types of relationships
                         obj['is_a'].append(it[1])
+                        obj['relations'].append((it[0], it[1]))
                     elif l[0] == 'name':
                         obj['name'] = l[1]
                     elif l[0] == 'is_obsolete' and l[1] == 'true':
@@ -203,6 +208,22 @@ class Ontology(object):
                 for ch_id in self.ont[t_id]['children']:
                     q.append(ch_id)
         return term_set
+
+    def get_subclass_of_pairs(self):
+        pairs = []
+        for go_id, obj in self.ont.items():
+            for sup_id in obj['subclass_of']:
+                if sup_id in self.ont:
+                    pairs.append((go_id, sup_id))
+        return pairs
+
+    def get_relation_triples(self):
+        res = []
+        for go1_id, obj in self.ont.items():
+            for rel, go2_id in obj['relations']:
+                if go2_id in self.ont:
+                    res.append((go1_id, rel, go2_id))
+        return res
 
 def read_fasta(filename):
     seqs = list()
